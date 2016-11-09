@@ -1,15 +1,19 @@
 <?php
-/*
+/* 
+ * stAn: this fork allows you to simply replicate MS SQL into Mysql on latest php7 using php-pdo and php-pdo_odbc (FreeTds + odbc) 
+ * follow this to setup the connector http://stackoverflow.com/questions/20163776/connect-php-to-mssql-via-pdo-odbc
+ * tested on php7 provided by ppa:/ondrej-php on Ubuntu 12.04, 14.04 and 16.04 https://launchpad.net/~ondrej/+archive/ubuntu/php
  * SOURCE: MS SQL
  */
-define('MSSQL_HOST','mssql_host');
+//define('MSSQL_HOST','mssql_host');
+define('MSSQL_SERVERNAME','servername from freeTDS config'); //section name from /etc/freetds/freetds.conf and /etc/odbc.ini
 define('MSSQL_USER','mssql_user');
 define('MSSQL_PASSWORD','mssql_password');
 define('MSSQL_DATABASE','mssql_database');
 
 /*
- * DESTINATION: MySQL
- */
+* DESTINATION: MySQL
+*/
 define('MYSQL_HOST', 'mysql_host');
 define('MYSQL_USER', 'mysql_user');
 define('MYSQL_PASSWORD','mysql_password');
@@ -32,32 +36,64 @@ function addTilde($string)
 }
 
 // Connect MS SQL
-$mssql_connect = mssql_connect(MSSQL_HOST, MSSQL_USER, MSSQL_PASSWORD) or die("Couldn't connect to SQL Server on '".MSSQL_HOST."'' user '".MSSQL_USER."'\n");
-echo "=> Connected to Source MS SQL Server on '".MSSQL_HOST."'\n";
+try {
+  $mssql = new PDO('odbc:DRIVER=freetds;SERVERNAME='.MSSQL_SERVERNAME.';DATABASE=' . MSSQL_DATABASE, MSSQL_USER, MSSQL_PASSWORD) or die("Couldn't connect to SQL Server on '".MSSQL_HOST."'' user '".MSSQL_USER."'\n");
+}
+catch (Exception $e) {
+	echo $e."\n"; 
+	die(1); 
+}
+echo "=> Connected to Source MS SQL Server on '".MSSQL_SERVERNAME."'\n";
 
-// Select MS SQL Database
-$mssql_db = mssql_select_db(MSSQL_DATABASE, $mssql_connect) or die("Couldn't open database '".MSSQL_DATABASE."'\n"); 
-echo "=> Found database '".MSSQL_DATABASE."'\n";
 
 // Connect to MySQL
-$mysql_connect = mysql_connect(MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD) or die("Couldn't connect to MySQL on '".MYSQL_HOST."'' user '".MYSQL_USER."'\n");
-echo "\n=> Connected to Source MySQL Server on ".MYSQL_HOST."\n";
-
+$mysqli = new mysqli(MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE);
+if ($mysqli->connect_error) {
+    echo 'Connect Error (' . $mysqli->connect_errno . ') '
+            . $mysqli->connect_error."\n";
+	die(1); 
+}
+else {
+	echo "\n=> Connected to Source MySQL Server on ".MYSQL_HOST."\n";
+}
 // Select MySQL Database
-$mssql_db = mysql_select_db(MYSQL_DATABASE, $mysql_connect) or die("Couldn't open database '".MYSQL_DATABASE."'\n"); 
-echo "=> Found database '".MYSQL_DATABASE."'\n";
 
 $mssql_tables = array();
 
 // Get MS SQL tables
 $sql = "SELECT * FROM sys.Tables;";
-$res = mssql_query($sql);
+
+$qe = $mssql->prepare($sql);
+$qe->execute();
+
 echo "\n=> Getting tables..\n";
-while ($row = mssql_fetch_assoc($res))
+
+while ($row = $qe->fetch(PDO::FETCH_ASSOC))
 {
 	array_push($mssql_tables, $row['name']);
-	//echo ($row['name'])."\n";
+	
+	
+	
 }
+
+
+// Get MS SQL Views
+$sql = "SELECT * FROM sys.Views;";
+
+
+$qe = $mssql->prepare($sql);
+$qe->execute();
+
+echo "\n=> Getting Views..\n";
+
+while ($row = $qe->fetch(PDO::FETCH_ASSOC))
+{
+	array_push($mssql_tables, $row['name']);
+	
+	
+	
+}
+
 echo "==> Found ". number_format(count($mssql_tables),0,',','.') ." tables\n\n";
 
 // Get Table Structures
@@ -70,18 +106,22 @@ if (!empty($mssql_tables))
 		echo "=====> Getting info table ".$table." from SQL Server\n";
 
 		$sql = "select * from information_schema.columns where table_name = '".$table."'";
-		$res = mssql_query($sql);
-
+		
+		
+		$qe = $mssql->prepare($sql);
+		$res = $qe->execute();
+		
 		if ($res) 
 		{
 			$mssql_tables[$table] = array();
 
 			$mysql = "DROP TABLE IF EXISTS `".$table."`";
-			mysql_query($mysql);
+			$mysqli->query($mysql);
 			$mysql = "CREATE TABLE `".$table."`";
 			$strctsql = $fields = array();
 
-			while ($row = mssql_fetch_assoc($res))
+			
+			while ($row = $qe->fetch(PDO::FETCH_ASSOC))
 			{
 				//print_r($row); echo "\n";
 				array_push($mssql_tables[$table], $row);
@@ -165,39 +205,42 @@ if (!empty($mssql_tables))
 
 			$mysql .= "(".implode(',', $strctsql).");";
 			echo "======> Creating table ".$table." on MySQL... ";
-			$q = mysql_query($mysql);
+			$q = $mysqli->query($mysql);
 			echo (($q) ? 'Success':'Failed!'."\n".$mysql."\n")."\n";
 			
 			echo "=====> Getting data from table ".$table." on SQL Server\n";
-			$sql = "SELECT * FROM ".$table;
-			$qres = mssql_query($sql);
-			$numrow = mssql_num_rows($qres);
+			$sql = "SELECT * FROM ".$table.' where 1=1';
+			
+			
+			$qe = $mssql->prepare($sql);
+			
+			$qe->execute();
+			
+			$numrow = $qe->rowCount();
 			echo "======> Found ".number_format($numrow,0,',','.')." rows\n";
 
-			if ($qres)
+			if ($numrow)
 			{
 				echo "=====> Inserting to table ".$table." on MySQL\n";
 				$numdata = 0;
 				if (!empty($fields))
 				{
 					$sfield = array_map('addTilde', $fields);
-					while ($qrow = mssql_fetch_assoc($qres))
+					while ($qrow = $qe->fetch(PDO::FETCH_ASSOC))
 					{
 						$datas = array();
 						foreach ($fields as $field) 
 						{
 							$ddata = (!empty($qrow[$field])) ? $qrow[$field] : '';
-							array_push($datas,"'".mysql_real_escape_string($ddata)."'");
+							array_push($datas,"'".$mysqli->real_escape_string($ddata)."'");
 						}
 
 						if (!empty($datas))
 						{
-							//$datas = array_map('addQuote', $datas);
-							//$fields = 
+							
 							$mysql = "INSERT INTO `".$table."` (".implode(',',$sfield).") VALUES (".implode(',',$datas).");";
-							//$mysql = mysql_real_escape_string($mysql);
-							//echo $mysql."\n";
-							$q = mysql_query($mysql);
+							
+							$q = $mysqli->query($mysql);
 							$numdata += ($q ? 1 : 0 );
 						}
 					}
@@ -212,5 +255,7 @@ if (!empty($mssql_tables))
 
 echo "Done!\n";
 
-mssql_close($mssql_connect);
-mysql_close($mysql_connect);
+$qe = null; 
+$mssql = null; 
+$mysqli->close();
+$mysqli = null; 
